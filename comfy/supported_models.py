@@ -1871,6 +1871,33 @@ class RT_DETR_v4(supported_models_base.BASE):
         return None
 
 
+class DepthAnything3(supported_models_base.BASE):
+    unet_config = {
+        "image_model": "DepthAnything3",
+    }
+
+    # Mono path: no num_heads / num_head_channels needed.
+    unet_extra_config = {}
+
+    supported_inference_dtypes = [torch.float16, torch.bfloat16, torch.float32]
+
+    def get_model(self, state_dict, prefix="", device=None):
+        return model_base.DepthAnything3(self, device=device)
+
+    def clip_target(self, state_dict={}):
+        return None
+
+    def process_unet_state_dict(self, state_dict):
+        # Drop weights for components we do not build (camera encoder/decoder,
+        # 3D Gaussian heads). Keeping unrelated keys around triggers spurious
+        # "unet unexpected" warnings on load.
+        drop_prefixes = ("cam_enc.", "cam_dec.", "gs_head.", "gs_adapter.")
+        for k in list(state_dict.keys()):
+            if k.startswith(drop_prefixes):
+                state_dict.pop(k)
+        return state_dict
+
+
 class ErnieImage(supported_models_base.BASE):
     unet_config = {
         "image_model": "ernie",
@@ -2107,4 +2134,5 @@ models = [
     CogVideoX_I2V,
     CogVideoX_T2V,
     SVD_img2vid,
+    DepthAnything3,
 ]
