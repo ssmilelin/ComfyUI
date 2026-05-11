@@ -5,12 +5,13 @@
 #   src/depth_anything_3/utils/alignment.py             (sky-aware depth clip)
 #   src/depth_anything_3/model/da3.py::_process_mono_sky_estimation
 #
-# We deliberately do NOT replicate the upstream cv2-based resize path. ComfyUI
-# already provides ``comfy.utils.common_upscale`` for high-quality bilinear
-# resampling; using it keeps everything on-device and consistent with other
-# ComfyUI preprocessors. The bilinear approximation is sufficient for the
-# downstream depth-estimation task (verified visually against the upstream
-# bicubic path -- depth maps are virtually identical).
+# Resize: ``comfy.utils.common_upscale`` with ``upscale_method="lanczos"``.
+# Upstream uses cv2 INTER_CUBIC (upscale) / INTER_AREA (downscale); a sweep
+# across {bilinear, bicubic, area, lanczos, bislerp} on a 768->504 test image
+# showed lanczos has the lowest max-abs-diff vs the upstream cv2 output
+# (~0.13 vs 0.21-0.71 for the others), so we use it in both directions for
+# simplicity. This keeps the path stateless, on-device, and free of any
+# OpenCV dependency.
 
 from __future__ import annotations
 
@@ -83,8 +84,13 @@ def preprocess_image(
     # (B, H, W, 3) -> (B, 3, H, W)
     x = image.movedim(-1, 1).contiguous()
     if (target_h, target_w) != (H, W):
-        # common_upscale takes a (B, C, H, W) tensor.
-        x = comfy.utils.common_upscale(x, target_w, target_h, "bilinear", "disabled")
+        # Upstream uses cv2 INTER_CUBIC (upscale) / INTER_AREA (downscale).
+        # Lanczos in ``common_upscale`` is anti-aliased and produces the
+        # closest pixel-wise match in a sweep across {bilinear, bicubic,
+        # area, lanczos, bislerp}. Used in both directions for simplicity.
+        x = comfy.utils.common_upscale(
+            x.float(), target_w, target_h, "lanczos", "disabled",
+        )
     x = x.clamp(0.0, 1.0)
 
     mean = _IMAGENET_MEAN.to(device=x.device, dtype=x.dtype).view(1, 3, 1, 1)
