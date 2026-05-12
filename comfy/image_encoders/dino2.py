@@ -6,6 +6,10 @@ import torch.nn.functional as F
 from comfy.text_encoders.bert import BertAttention
 import comfy.model_management
 from comfy.ldm.modules.attention import optimized_attention_for_device
+from comfy.ldm.depth_anything_3.reference_view_selector import (
+    select_reference_view, reorder_by_reference, restore_original_order,
+    THRESH_FOR_REF_SELECTION,
+)
 
 
 class Dino2AttentionOutput(torch.nn.Module):
@@ -263,19 +267,24 @@ class Dino2Embeddings(torch.nn.Module):
         class_pos_embed = pos_embed[:, 0]
         patch_pos_embed = pos_embed[:, 1:]
         dim = x.shape[-1]
-        w0 = w // self.patch_size
-        h0 = h // self.patch_size
+        ph = h // self.patch_size  # patch grid height
+        pw = w // self.patch_size  # patch grid width
         M = int(math.sqrt(N))
         assert N == M * M
         # Historical 0.1 offset preserves bicubic resample compatibility with
         # the original DINOv2 release; see the upstream PR for context.
-        sx = float(w0 + 0.1) / M
-        sy = float(h0 + 0.1) / M
+        # ``scale_factor`` is interpreted as (height_scale, width_scale) by
+        # ``F.interpolate`` so we must put the height scale FIRST. Earlier
+        # revisions of this function had it swapped which only worked for
+        # square inputs (e.g. CLIP-vision square crops); non-square inputs
+        # like DA3-Small / DA3-Base multi-view paths exposed the bug.
+        sh = float(ph + 0.1) / M
+        sw = float(pw + 0.1) / M
         patch_pos_embed = F.interpolate(
             patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
-            scale_factor=(sx, sy), mode="bicubic", antialias=False,
+            scale_factor=(sh, sw), mode="bicubic", antialias=False,
         )
-        assert (w0, h0) == patch_pos_embed.shape[-2:]
+        assert (ph, pw) == patch_pos_embed.shape[-2:]
         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
         return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
 
@@ -426,7 +435,9 @@ class Dinov2Model(torch.nn.Module):
         x[:, :, 0] = inj
         return x
 
-    def get_intermediate_layers_da3(self, pixel_values, out_layers, cam_token=None):
+    def get_intermediate_layers_da3(self, pixel_values, out_layers, cam_token=None,
+                                ref_view_strategy="saddle_balanced",
+                                export_feat_layers=None):
         """Multi-layer DINOv2 feature extraction used by Depth Anything 3.
 
         Args:
@@ -435,13 +446,22 @@ class Dinov2Model(torch.nn.Module):
             cam_token: optional ``(B, S, dim)`` camera token to inject at
                 ``alt_start``. If ``None`` and the model has its own
                 ``camera_token`` parameter, that is used.
+            ref_view_strategy: when ``S >= 3`` and ``cam_token is None``,
+                pick a reference view via this strategy and move it to
+                position 0 right before the first alt-attention block.
+                The original view order is restored on the way out.
+            export_feat_layers: optional iterable of layer indices whose
+                local attention outputs to also return as auxiliary
+                features (``(B, S, N_patch, C)`` after final norm). Used
+                by the multi-view path to expose intermediate features
+                to the nested-architecture wrapper.
 
         Returns:
-            List of ``(patch_tokens, cls_or_cam_token)`` tuples, one per
-            requested ``out_layers`` entry. ``patch_tokens`` has shape
-            ``(B, S, N_patch, C)`` (or ``(B, S, N_patch, 2*C)`` when the
-            model was configured with ``cat_token=True``); the second item
-            has shape ``(B, S, C)``.
+            ``(layer_outputs, aux_outputs)`` where ``layer_outputs`` is a
+            list of ``(patch_tokens, cls_or_cam_token)`` tuples (one per
+            ``out_layers`` entry) and ``aux_outputs`` is a list of
+            ``(B, S, N_patch, C)`` features for ``export_feat_layers``
+            (empty list when not requested).
         """
         if pixel_values.ndim == 4:
             pixel_values = pixel_values.unsqueeze(1)
@@ -460,14 +480,27 @@ class Dinov2Model(torch.nn.Module):
         optimized_attention = optimized_attention_for_device(x.device, False, small_input=True)
 
         out_set = set(out_layers)
+        export_set = set(export_feat_layers) if export_feat_layers else set()
         outputs: list[torch.Tensor] = []
+        aux_outputs: list[torch.Tensor] = []
         local_x = x
+        b_idx = None
+
 
         for i, blk in enumerate(self.encoder.layer):
             apply_rope = self.rope is not None and i >= self.rope_start
             block_rope = self.rope if apply_rope else None
             l_pos = pos_local if apply_rope else None
             g_pos = pos_global if apply_rope else None
+
+            # Reference-view selection threshold: matches the upstream constant
+            # ``THRESH_FOR_REF_SELECTION = 3``. Skipped when a user-supplied
+            # cam_token is provided (camera info already pins the geometry).
+            if (self.alt_start != -1 and i == self.alt_start - 1
+                    and S >= THRESH_FOR_REF_SELECTION and cam_token is None):
+                b_idx = select_reference_view(x, strategy=ref_view_strategy)
+                x = reorder_by_reference(x, b_idx)
+                local_x = reorder_by_reference(local_x, b_idx)
 
             if self.alt_start != -1 and i == self.alt_start:
                 x = self._inject_camera_token(x, B, S, cam_token)
@@ -491,7 +524,17 @@ class Dinov2Model(torch.nn.Module):
                     out_x = torch.cat([local_x, x], dim=-1)
                 else:
                     out_x = x
+                # Restore original view order on the way out so heads see views
+                # in the user's expected order.
+                if b_idx is not None and self.alt_start != -1:
+                    out_x = restore_original_order(out_x, b_idx)
                 outputs.append(out_x)
+
+            if i in export_set:
+                aux = x
+                if b_idx is not None and self.alt_start != -1:
+                    aux = restore_original_order(aux, b_idx)
+                aux_outputs.append(aux)
 
         # Apply final norm. When ``cat_token`` is set, only the right half
         # ("global" features) is normalised; the left half is left as-is to
@@ -511,4 +554,8 @@ class Dinov2Model(torch.nn.Module):
 
         # Drop cls/cam token from the patch sequence.
         normed = [o[..., 1 + self.num_register_tokens:, :] for o in normed]
-        return list(zip(normed, cls_tokens))
+
+        # Final layernorm + drop cls token from auxiliary features too.
+        aux_normed = [self.layernorm(o)[..., 1 + self.num_register_tokens:, :]
+                      for o in aux_outputs]
+        return list(zip(normed, cls_tokens)), aux_normed

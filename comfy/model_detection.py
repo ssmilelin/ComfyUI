@@ -887,6 +887,24 @@ def detect_unet_config(state_dict, key_prefix, metadata=None):
         else:
             # vits/vitb: 12 blocks
             dit_config["out_layers"] = [5, 7, 9, 11]
+
+        # Camera encoder/decoder presence (multi-view + pose path).
+        has_cam_enc = '{}cam_enc.token_norm.weight'.format(key_prefix) in state_dict_keys
+        has_cam_dec = '{}cam_dec.fc_t.weight'.format(key_prefix) in state_dict_keys
+        dit_config["has_cam_enc"] = has_cam_enc
+        dit_config["has_cam_dec"] = has_cam_dec
+        if has_cam_enc:
+            cam_enc_w = state_dict.get(
+                '{}cam_enc.pose_branch.fc2.weight'.format(key_prefix)
+            )
+            if cam_enc_w is not None:
+                dit_config["cam_dim_out"] = cam_enc_w.shape[0]
+        if has_cam_dec:
+            cam_dec_w = state_dict.get(
+                '{}cam_dec.fc_t.weight'.format(key_prefix)
+            )
+            if cam_dec_w is not None:
+                dit_config["cam_dec_dim_in"] = cam_dec_w.shape[1]
         return dit_config
 
     if '{}layers.0.mlp.linear_fc2.weight'.format(key_prefix) in state_dict_keys: # Ernie Image

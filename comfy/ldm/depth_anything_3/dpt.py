@@ -353,7 +353,10 @@ class DualDPT(nn.Module):
     """Two-head DPT used by DA3-Small / DA3-Base.
 
     The auxiliary "ray" head is constructed so that HF state-dict keys load
-    cleanly, but its outputs are unused on the monocular path.
+    cleanly. It is only executed when :attr:`enable_aux` is set on the
+    instance (typically by ``DepthAnything3Net`` when running multi-view
+    with ``use_ray_pose=True``); otherwise the monocular path skips it for
+    speed and the auxiliary submodules sit idle.
     """
 
     def __init__(
@@ -382,6 +385,9 @@ class DualDPT(nn.Module):
         self.aux_out1_conv_num = aux_out1_conv_num
         self.head_main, self.head_aux = head_names
         self.intermediate_layer_idx: Tuple[int, int, int, int] = (0, 1, 2, 3)
+        # Toggle the auxiliary ray branch at runtime. Default off (mono path).
+        # ``DepthAnything3Net`` flips this on when running multi-view + ray-pose.
+        self.enable_aux: bool = False
 
         self.norm = operations.LayerNorm(dim_in, device=device, dtype=dtype)
         out_channels = list(out_channels)
@@ -489,9 +495,18 @@ class DualDPT(nn.Module):
         # Main pyramid (output_conv1 is applied inside the upstream `_fuse`,
         # before interpolation -- replicate that order here).
         m = self.scratch.refinenet4(l4_rn, size=l3_rn.shape[2:])
+        if self.enable_aux:
+            a4 = self.scratch.refinenet4_aux(l4_rn, size=l3_rn.shape[2:])
+            aux_pyr = [a4]
         m = self.scratch.refinenet3(m, l3_rn, size=l2_rn.shape[2:])
+        if self.enable_aux:
+            aux_pyr.append(self.scratch.refinenet3_aux(aux_pyr[-1], l3_rn, size=l2_rn.shape[2:]))
         m = self.scratch.refinenet2(m, l2_rn, size=l1_rn.shape[2:])
+        if self.enable_aux:
+            aux_pyr.append(self.scratch.refinenet2_aux(aux_pyr[-1], l2_rn, size=l1_rn.shape[2:]))
         m = self.scratch.refinenet1(m, l1_rn)
+        if self.enable_aux:
+            aux_pyr.append(self.scratch.refinenet1_aux(aux_pyr[-1], l1_rn))
         m = self.scratch.output_conv1(m)
 
         h_out = int(ph * self.patch_size / self.down_ratio)
@@ -510,8 +525,25 @@ class DualDPT(nn.Module):
             f"{self.head_main}_conf": depth_conf.view(B, S, *depth_conf.shape[1:]),
         }
 
-        # NOTE: we intentionally do not run the auxiliary "ray" branch — it is
-        # only needed for pose/ray-conditioned outputs which are out of scope
-        # for this port. The aux submodules are still built so HF weights load.
+        if self.enable_aux:
+            # Auxiliary "ray" head (multi-level inside) -- only the last level
+            # is returned. Mirrors upstream ``DualDPT._fuse`` + ``_forward_impl``:
+            # each aux pyramid level goes through ``output_conv1_aux[i]``
+            # (5-layer conv stack that ends at ``features // 2`` channels),
+            # then the last level optionally gets a pos-embed and finally
+            # ``output_conv2_aux[-1]``.
+            aux_processed = [
+                self.scratch.output_conv1_aux[i](a) for i, a in enumerate(aux_pyr)
+            ]
+            last_aux = aux_processed[-1]
+            if self.pos_embed:
+                last_aux = _add_pos_embed(last_aux, W, H)
+            last_aux_logits = self.scratch.output_conv2_aux[-1](last_aux)
+            fmap_last = last_aux_logits.permute(0, 2, 3, 1)
+            # Channels: [ray(6), ray_conf(1)]; ray uses 'linear' activation.
+            aux_pred = fmap_last[..., :-1]
+            aux_conf = _apply_activation(fmap_last[..., -1], self.conf_activation)
+            outs[self.head_aux] = aux_pred.view(B, S, *aux_pred.shape[1:])
+            outs[f"{self.head_aux}_conf"] = aux_conf.view(B, S, *aux_conf.shape[1:])
 
         return outs

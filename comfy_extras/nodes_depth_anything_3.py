@@ -1,6 +1,6 @@
 """ComfyUI nodes for Depth Anything 3.
 
-Adds three nodes:
+Adds these nodes:
 
 * ``LoadDepthAnything3`` -- load a DA3 ``.safetensors`` file from the
   ``models/depth_estimation/`` folder. Falls back to ``models/diffusion_models/``
@@ -9,6 +9,9 @@ Adds three nodes:
   depth map as a ComfyUI ``IMAGE`` (visualisation / ControlNet input).
 * ``DepthAnything3DepthRaw`` -- run depth estimation and return the raw depth,
   confidence and sky channels as ``MASK`` outputs.
+* ``DepthAnything3MultiView`` -- multi-view path: depth + per-view extrinsics
+  + intrinsics. Pose is decoded either from the camera-decoder MLP (default)
+  or from the auxiliary ray output via RANSAC (DA3-Small/Base only).
 """
 
 from __future__ import annotations
@@ -194,6 +197,153 @@ class DepthAnything3Depth(io.ComfyNode):
 # -----------------------------------------------------------------------------
 
 
+class DepthAnything3MultiView(io.ComfyNode):
+    """Multi-view depth + pose estimation for DA3-Small / DA3-Base / DA3-Large.
+
+    Treats each batch element of the input ``IMAGE`` as a separate view of
+    the same scene. The selected reference view is auto-chosen by the
+    backbone via ``ref_view_strategy`` (when at least 3 views are
+    supplied), unless camera extrinsics are provided -- in which case the
+    geometry is pinned by the user and no reordering is done.
+
+    Output structure:
+      * ``depth_image`` -- per-view normalised depth as a stacked ``IMAGE``
+        batch (one frame per view, original input order).
+      * ``confidence`` / ``sky`` -- per-view masks (zero when the variant
+        does not produce them).
+      * ``camera`` -- ``LATENT`` dict with keys::
+            samples:    (1, S, 1, h_p, w_p)  -- raw depth packed as latent
+            type:       "da3_multiview"
+            extrinsics: (1, S, 4, 4)          world-to-camera matrices
+            intrinsics: (1, S, 3, 3)          pixel-space intrinsics
+            depth_raw:  (S, H, W)             un-normalised depth
+            confidence: (S, H, W)
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="DepthAnything3MultiView",
+            display_name="Depth Anything 3 (Multi-View)",
+            category="image/depth",
+            inputs=[
+                io.Model.Input("model"),
+                io.Image.Input("image",
+                               tooltip="Image batch where each frame is a view of the same scene."),
+                io.Int.Input("process_res", default=504, min=140, max=2520, step=14,
+                             tooltip="Longest-side target resolution (multiple of 14)."),
+                io.Combo.Input("resize_method",
+                               options=["upper_bound_resize", "lower_bound_resize"],
+                               default="upper_bound_resize"),
+                io.Combo.Input("ref_view_strategy",
+                               options=["saddle_balanced", "saddle_sim_range", "first", "middle"],
+                               default="saddle_balanced",
+                               tooltip="Reference view selection (only applied when "
+                                       "S>=3 and no extrinsics are provided)."),
+                io.Combo.Input("pose_method",
+                               options=["cam_dec", "ray_pose"],
+                               default="cam_dec",
+                               tooltip="cam_dec: small MLP on the final cam token (works for "
+                                       "all variants with cam_dec). ray_pose: RANSAC over the "
+                                       "DualDPT auxiliary ray output (DA3-Small/Base only)."),
+                io.Combo.Input("normalization",
+                               options=["v2_style", "min_max", "raw"],
+                               default="v2_style"),
+            ],
+            outputs=[
+                io.Image.Output("depth_image"),
+                io.Mask.Output("confidence"),
+                io.Mask.Output("sky_mask"),
+                io.Latent.Output("camera",
+                                 tooltip="Per-view extrinsics + intrinsics + raw depth."),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, model, image, process_res, resize_method, ref_view_strategy,
+                pose_method, normalization) -> io.NodeOutput:
+        assert image.ndim == 4 and image.shape[-1] == 3, \
+            f"expected (B,H,W,3) IMAGE; got {tuple(image.shape)}"
+        S, H, W, _ = image.shape
+
+        mm.load_model_gpu(model)
+        diffusion = model.model.diffusion_model
+        device = mm.get_torch_device()
+        dtype = diffusion.dtype if diffusion.dtype is not None else torch.float32
+
+        # Stack all views as a single batch element with views axis = S.
+        x = image.to(device)
+        x = da3_preprocess.preprocess_image(x, process_res=process_res, method=resize_method)
+        x = x.to(dtype=dtype).unsqueeze(0)  # (1, S, 3, H', W')
+
+        use_ray_pose = (pose_method == "ray_pose")
+        with torch.no_grad():
+            out = diffusion(x, use_ray_pose=use_ray_pose,
+                            ref_view_strategy=ref_view_strategy)
+
+        # ``out["depth"]`` is (S, h_p, w_p); resize back to (S, H, W).
+        depth_lr = out["depth"].float()
+        depth = torch.nn.functional.interpolate(
+            depth_lr.unsqueeze(1), size=(H, W),
+            mode="bilinear", align_corners=False,
+        ).squeeze(1).cpu()
+
+        if "depth_conf" in out:
+            conf = torch.nn.functional.interpolate(
+                out["depth_conf"].unsqueeze(1).float(), size=(H, W),
+                mode="bilinear", align_corners=False,
+            ).squeeze(1).cpu()
+        else:
+            conf = torch.zeros_like(depth)
+
+        if "sky" in out:
+            sky = torch.nn.functional.interpolate(
+                out["sky"].unsqueeze(1).float(), size=(H, W),
+                mode="bilinear", align_corners=False,
+            ).squeeze(1).cpu()
+        else:
+            sky = torch.zeros_like(depth)
+
+        # Pose. Defaults to identity when neither cam_dec nor ray_pose is wired up.
+        if "extrinsics" in out and "intrinsics" in out:
+            extrinsics = out["extrinsics"].float().cpu()
+            intrinsics = out["intrinsics"].float().cpu()
+        else:
+            extrinsics = torch.eye(4)[None, None].expand(1, S, 4, 4).clone()
+            intrinsics = torch.eye(3)[None, None].expand(1, S, 3, 3).clone()
+
+        # Normalised depth viz per view (same path as the mono node).
+        if normalization == "v2_style":
+            norm = torch.stack([
+                da3_preprocess.normalize_depth_v2_style(depth[i],
+                                                       sky[i] if "sky" in out else None)
+                for i in range(S)
+            ], dim=0)
+        elif normalization == "min_max":
+            norm = da3_preprocess.normalize_depth_min_max(depth)
+        else:
+            norm = depth
+
+        depth_image = norm.unsqueeze(-1).repeat(1, 1, 1, 3).clamp(0.0, 1.0).contiguous()
+
+        camera_latent = {
+            # The Latent contract requires a ``samples`` field; pack the raw
+            # depth there so a downstream node still has a tensor to chain on.
+            "samples": depth.unsqueeze(0).unsqueeze(2).contiguous(),  # (1, S, 1, H, W)
+            "type": "da3_multiview",
+            "extrinsics": extrinsics.contiguous(),
+            "intrinsics": intrinsics.contiguous(),
+            "depth_raw": depth.contiguous(),
+            "confidence": conf.contiguous(),
+        }
+        return io.NodeOutput(
+            depth_image,
+            conf.contiguous(),
+            sky.contiguous(),
+            camera_latent,
+        )
+
+
 class DepthAnything3DepthRaw(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -240,6 +390,7 @@ class DepthAnything3Extension(ComfyExtension):
             LoadDepthAnything3,
             DepthAnything3Depth,
             DepthAnything3DepthRaw,
+            DepthAnything3MultiView,
         ]
 
 

@@ -1888,10 +1888,12 @@ class DepthAnything3(supported_models_base.BASE):
         return None
 
     def process_unet_state_dict(self, state_dict):
-        # Drop weights for components we do not build (camera encoder/decoder,
-        # 3D Gaussian heads). Keeping unrelated keys around triggers spurious
-        # "unet unexpected" warnings on load.
-        drop_prefixes = ("cam_enc.", "cam_dec.", "gs_head.", "gs_adapter.")
+        # Drop weights for components we do not build (3D Gaussian heads).
+        # ``cam_enc.*`` / ``cam_dec.*`` are kept and consumed by the multi-view
+        # forward path -- their layouts in our ``camera.py`` mirror the
+        # upstream ``cam_enc.py`` / ``cam_dec.py`` so HF safetensors load
+        # directly without any key remap.
+        drop_prefixes = ("gs_head.", "gs_adapter.")
         for k in list(state_dict.keys()):
             if k.startswith(drop_prefixes):
                 state_dict.pop(k)
