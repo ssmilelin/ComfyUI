@@ -9,15 +9,25 @@
 # The class signature mirrors the upstream YAML config so a single dit_config
 # detected from the state dict in ``comfy/model_detection.py`` is sufficient
 # to construct the right variant.
+#
+# Backbone: ``comfy.image_encoders.dino2.Dinov2Model`` is shared with the
+# CLIP-vision DINOv2 path. DA3-specific extensions (RoPE, QK-norm,
+# alternating local/global attention, camera token, multi-layer feature
+# extraction, pos-embed interpolation) are opt-in via the config dict and are
+# all disabled for the Mono/Metric variants. The upstream DA3 weight layout
+# (``backbone.pretrained.*`` with fused QKV) is converted to the
+# ``Dinov2Model`` layout in
+# ``comfy.supported_models.DepthAnything3.process_unet_state_dict``.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import torch
 import torch.nn as nn
 
-from .dinov2 import DinoV2
+from comfy.image_encoders.dino2 import Dinov2Model
+
 from .dpt import DPT, DualDPT
 
 
@@ -25,6 +35,42 @@ _HEAD_REGISTRY = {
     "dpt": DPT,
     "dualdpt": DualDPT,
 }
+
+
+# Backbone presets (mirror the upstream DINOv2 ViT variants).
+_BACKBONE_PRESETS = {
+    "vits": dict(hidden_size=384,  num_hidden_layers=12, num_attention_heads=6,  use_swiglu_ffn=False),
+    "vitb": dict(hidden_size=768,  num_hidden_layers=12, num_attention_heads=12, use_swiglu_ffn=False),
+    "vitl": dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16, use_swiglu_ffn=False),
+    "vitg": dict(hidden_size=1536, num_hidden_layers=40, num_attention_heads=24, use_swiglu_ffn=True),
+}
+
+
+def _build_backbone_config(
+    backbone_name: str,
+    *,
+    alt_start: int,
+    qknorm_start: int,
+    rope_start: int,
+    cat_token: bool,
+) -> dict:
+    if backbone_name not in _BACKBONE_PRESETS:
+        raise ValueError(f"Unknown DINOv2 backbone variant: {backbone_name!r}")
+    cfg = dict(_BACKBONE_PRESETS[backbone_name])
+    cfg.update(dict(
+        layer_norm_eps=1e-6,
+        patch_size=14,
+        image_size=518,
+        # DA3 weights have no mask_token; skip registering it to avoid spurious
+        # missing-key warnings on load.
+        use_mask_token=False,
+        alt_start=alt_start,
+        qknorm_start=qknorm_start,
+        rope_start=rope_start,
+        cat_token=cat_token,
+        rope_freq=100.0,
+    ))
+    return cfg
 
 
 class DepthAnything3Net(nn.Module):
@@ -64,16 +110,16 @@ class DepthAnything3Net(nn.Module):
         self.head_type = head_type.lower()
         self.has_sky = (self.head_type == "dpt") and head_use_sky_head
         self.has_conf = head_output_dim > 1
+        self.out_layers = list(out_layers)
 
-        self.backbone = DinoV2(
-            name=backbone_name,
-            out_layers=list(out_layers),
+        backbone_cfg = _build_backbone_config(
+            backbone_name,
             alt_start=alt_start,
             qknorm_start=qknorm_start,
             rope_start=rope_start,
             cat_token=cat_token,
-            device=device, dtype=dtype, operations=operations,
         )
+        self.backbone = Dinov2Model(backbone_cfg, dtype, device, operations)
 
         head_kwargs = dict(
             dim_in=head_dim_in,
@@ -122,7 +168,7 @@ class DepthAnything3Net(nn.Module):
         assert H % self.PATCH_SIZE == 0 and W % self.PATCH_SIZE == 0, \
             f"image H,W must be multiples of {self.PATCH_SIZE}; got {(H, W)}"
 
-        feats = self.backbone(image)
+        feats = self.backbone.get_intermediate_layers(image, self.out_layers)
         head_out = self.head(feats, H=H, W=W, patch_start_idx=0)
 
         # Flatten the views axis (S=1 in mono inference path).
