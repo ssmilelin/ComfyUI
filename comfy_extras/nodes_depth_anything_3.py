@@ -163,10 +163,16 @@ class DepthAnything3(io.ComfyNode):
                                        "In multi-view mode each frame is treated as "
                                        "a separate view of the same scene."),
                 io.Int.Input("process_res", default=504, min=140, max=2520, step=14,
-                             tooltip="Longest-side target resolution (multiple of 14)."),
+                             tooltip="Resolution the model runs at (longest side, multiple of 14). "
+                                     "Lower = faster / less VRAM; higher = more detail. "
+                                     "Output is upsampled back to the original size."),
                 io.Combo.Input("resize_method",
                                options=["upper_bound_resize", "lower_bound_resize"],
-                               default="upper_bound_resize"),
+                               default="upper_bound_resize",
+                               tooltip="upper_bound_resize: scale so the longest side = process_res "
+                                       "(caps memory, default). "
+                                       "lower_bound_resize: scale so the shortest side = process_res "
+                                       "(preserves more detail on tall/wide images, uses more memory)."),
                 io.Combo.Input("normalization",
                                options=["v2_style", "min_max", "raw"],
                                default="v2_style",
@@ -178,15 +184,30 @@ class DepthAnything3(io.ComfyNode):
                                          "normalisation. Requires a sky segmentation head "
                                          "(DA3-Mono-Large or DA3-Metric-Large). "
                                          "Raises an error on DA3-Small/Base."),
-                io.DynamicCombo.Input("mode", options=[
+                io.DynamicCombo.Input("mode",
+                                      tooltip="mono: single image or independent batch — "
+                                              "use with any model. "
+                                              "multiview: all frames processed together with "
+                                              "cross-view attention for geometric consistency; "
+                                              "also outputs camera pose — requires DA3-Small or DA3-Base.",
+                                      options=[
                     io.DynamicCombo.Option("mono", []),
                     io.DynamicCombo.Option("multiview", [
                         io.Combo.Input("ref_view_strategy",
                                        options=["saddle_balanced", "saddle_sim_range",
                                                 "first", "middle"],
                                        default="saddle_balanced",
-                                       tooltip="Reference view selection strategy (applied when "
-                                               "S >= 3 and no extrinsics are provided)."),
+                                       tooltip="Which view to use as the geometric anchor "
+                                               "(only applied when S >= 3 and no extrinsics "
+                                               "are provided). "
+                                               "saddle_balanced: picks the view whose CLS-token "
+                                               "features are closest to the median across "
+                                               "similarity, norm and variance — best general "
+                                               "choice. "
+                                               "saddle_sim_range: picks the view with the widest "
+                                               "similarity spread to other views — favours "
+                                               "the most distinct viewpoint. "
+                                               "first / middle: deterministic positional fallbacks."),
                         io.Combo.Input("pose_method",
                                        options=["cam_dec", "ray_pose"],
                                        default="cam_dec",
