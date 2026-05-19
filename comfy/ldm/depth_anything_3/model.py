@@ -243,7 +243,7 @@ class DepthAnything3Net(nn.Module):
         if isinstance(self.head, DualDPT):
             self.head.enable_aux = bool(use_ray_pose)
 
-        feats, aux_feats = self.backbone.get_intermediate_layers(
+        feats, aux_feats = self.backbone.get_intermediate_layers_da3(
             image, self.out_layers, cam_token=cam_token,
             ref_view_strategy=ref_view_strategy,
             export_feat_layers=export_feat_layers,
