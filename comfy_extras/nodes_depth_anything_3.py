@@ -200,7 +200,7 @@ class DepthAnything3(io.ComfyNode):
                                tooltip="How to map raw depth to [0, 1] for the output image. "
                                        "'raw' preserves absolute values — use this to keep "
                                        "metric units when running DA3-Metric-Large."),
-                io.Boolean.Input("apply_sky_clip", default=True,
+                io.Boolean.Input("apply_sky_clip", default=False,
                                  tooltip="Clip sky-region depth to the 99th percentile before "
                                          "normalisation. Requires a sky segmentation head "
                                          "(DA3-Mono-Large or DA3-Metric-Large). "
