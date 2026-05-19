@@ -184,8 +184,7 @@ class RotaryPositionEmbedding2D(torch.nn.Module):
 
 class Dino2Encoder(torch.nn.Module):
     def __init__(self, dim, num_heads, layer_norm_eps, num_layers, dtype, device, operations, use_swiglu_ffn,
-                 qknorm_start: int = -1, rope: "RotaryPositionEmbedding2D | None" = None,
-                 rope_start: int = -1):
+                 qknorm_start: int = -1):
         super().__init__()
         self.layer = torch.nn.ModuleList([
             Dino2Block(
@@ -195,8 +194,6 @@ class Dino2Encoder(torch.nn.Module):
             )
             for i in range(num_layers)
         ])
-        self.rope = rope
-        self.rope_start = rope_start
 
     def forward(self, x, intermediate_output=None):
         # Backward-compat path used by ``ClipVisionModel`` (no DA3 extensions).
@@ -282,7 +279,6 @@ class Dino2Embeddings(torch.nn.Module):
         return torch.cat((class_pos, patch_pos), dim=1).to(x.dtype)
 
     def forward(self, pixel_values):
-        _, _, H, W = pixel_values.shape
         x = self.patch_embeddings(pixel_values)
         x = torch.cat((self.cls_token.to(device=x.device, dtype=x.dtype).expand(x.shape[0], -1, -1), x), dim=1)
         if x.shape[1] - 1 == self.position_embeddings.shape[1] - 1:
@@ -351,11 +347,16 @@ class Dinov2Model(torch.nn.Module):
             dim, heads, layer_norm_eps, num_layers, dtype, device, operations,
             use_swiglu_ffn=use_swiglu_ffn,
             qknorm_start=self.qknorm_start,
-            rope=self.rope, rope_start=self.rope_start,
         )
         self.layernorm = operations.LayerNorm(dim, eps=layer_norm_eps, dtype=dtype, device=device)
 
     def forward(self, pixel_values, attention_mask=None, intermediate_output=None):
+        if self.alt_start != -1:
+            raise RuntimeError(
+                "Dinov2Model.forward() is the backward-compatible CLIP-vision path and does not "
+                "apply DA3 extensions (RoPE, alternating attention, camera-token injection). "
+                "Use get_intermediate_layers_da3() for Depth Anything 3 models."
+            )
         x = self.embeddings(pixel_values)
         x, i = self.encoder(x, intermediate_output=intermediate_output)
         x = self.layernorm(x)
