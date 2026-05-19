@@ -36,6 +36,7 @@ import folder_paths
 from comfy.ldm.depth_anything_3 import preprocess as da3_preprocess
 from comfy_api.latest import ComfyExtension, io
 
+
 class LoadDepthAnything3(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -67,7 +68,7 @@ class LoadDepthAnything3(io.ComfyNode):
         elif weight_dtype == "fp32":
             model_options["dtype"] = torch.float32
 
-        path = folder_paths.get_full_path_or_raise("depth_estimation", model_name)
+        path = folder_paths.get_full_path_or_raise("geometry_estimation", model_name)
         model = comfy.sd.load_diffusion_model(path, model_options=model_options)
         return io.NodeOutput(model)
 
