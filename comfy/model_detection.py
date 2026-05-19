@@ -805,7 +805,7 @@ def detect_unet_config(state_dict, key_prefix, metadata=None):
         dit_config["enc_h"] = state_dict['{}encoder.pan_blocks.1.cv4.conv.weight'.format(key_prefix)].shape[0]
         return dit_config
 
-    # Depth Anything 3 (Apache-2.0 monocular variants: Small/Base/Mono-Large/Metric-Large).
+    # Depth Anything 3
     if '{}backbone.pretrained.patch_embed.proj.weight'.format(key_prefix) in state_dict_keys:
         dit_config = {}
         dit_config["image_model"] = "DepthAnything3"

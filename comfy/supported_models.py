@@ -1888,41 +1888,16 @@ class DepthAnything3(supported_models_base.BASE):
         return None
 
     def process_unet_state_dict(self, state_dict):
-        # Drop weights for components we do not build (3D Gaussian heads).
-        # ``cam_enc.*`` / ``cam_dec.*`` are kept and consumed by the multi-view
-        # forward path -- their layouts in our ``camera.py`` mirror the
-        # upstream ``cam_enc.py`` / ``cam_dec.py`` so HF safetensors load
-        # directly without any key remap.
+        # Drop Gaussian-head weights; remap fused backbone QKV to Dinov2Model layout.
         drop_prefixes = ("gs_head.", "gs_adapter.")
         for k in list(state_dict.keys()):
             if k.startswith(drop_prefixes):
                 state_dict.pop(k)
-        # Remap upstream DA3 backbone keys (``backbone.pretrained.*`` with
-        # fused QKV) to the layout used by ``comfy.image_encoders.dino2.Dinov2Model``.
         return _da3_remap_backbone_keys(state_dict, prefix="backbone.")
 
 
 def _da3_remap_backbone_keys(state_dict, prefix="backbone."):
-    """Rewrite upstream DA3 DINOv2 keys to the shared ``Dinov2Model`` layout.
-
-    Upstream layout (under ``{prefix}pretrained.``):
-      patch_embed.proj.{weight,bias}, pos_embed, cls_token, camera_token, norm.*,
-      blocks.{i}.norm{1,2}.*, blocks.{i}.attn.qkv.{weight,bias},
-      blocks.{i}.attn.q_norm.*, blocks.{i}.attn.k_norm.*,
-      blocks.{i}.attn.proj.*, blocks.{i}.ls{1,2}.gamma,
-      blocks.{i}.mlp.fc{1,2}.* (or w12/w3 for SwiGLU)
-
-    Target layout (Dinov2Model under ``{prefix}``):
-      embeddings.patch_embeddings.projection.*,
-      embeddings.position_embeddings, embeddings.cls_token, embeddings.camera_token,
-      layernorm.*,
-      encoder.layer.{i}.norm{1,2}.*,
-      encoder.layer.{i}.attention.attention.{query,key,value}.*,
-      encoder.layer.{i}.attention.q_norm.*, encoder.layer.{i}.attention.k_norm.*,
-      encoder.layer.{i}.attention.output.dense.*,
-      encoder.layer.{i}.layer_scale{1,2}.lambda1,
-      encoder.layer.{i}.mlp.fc{1,2}.* (or weights_in/weights_out for SwiGLU)
-    """
+    """Map ``backbone.pretrained.*`` (upstream DA3) keys to ``Dinov2Model`` under ``prefix``."""
     pre = prefix + "pretrained."
     src_keys = [k for k in state_dict.keys() if k.startswith(pre)]
     if not src_keys:

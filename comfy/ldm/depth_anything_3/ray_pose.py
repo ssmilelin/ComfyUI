@@ -24,9 +24,7 @@ from typing import Optional, Tuple
 import torch
 
 
-# -----------------------------------------------------------------------------
-# Linear-algebra helpers
-# -----------------------------------------------------------------------------
+# qr/svd use fp32: CUDA often has no fp16/bf16 kernels for these ops.
 
 
 def _ql_decomposition(A: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:

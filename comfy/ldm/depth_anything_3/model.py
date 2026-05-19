@@ -65,8 +65,7 @@ def _build_backbone_config(
         layer_norm_eps=1e-6,
         patch_size=14,
         image_size=518,
-        # DA3 weights have no mask_token; skip registering it to avoid spurious
-        # missing-key warnings on load.
+        # No mask_token in DA3 weights; omit param to avoid load warnings.
         use_mask_token=False,
         alt_start=alt_start,
         qknorm_start=qknorm_start,
@@ -149,10 +148,7 @@ class DepthAnything3Net(nn.Module):
             )
         self.head = head_cls(**head_kwargs)
 
-        # Camera encoder / decoder are only constructed when their weights are
-        # present in the checkpoint; the multi-view / pose forward path becomes
-        # available accordingly. ``cam_enc.dim_out`` matches the backbone's
-        # ``embed_dim`` so the cam token slots into block ``alt_start``.
+        # Built only if checkpoint has weights; cam_enc output dim == embed_dim.
         embed_dim = backbone_cfg["hidden_size"]
         if has_cam_enc:
             self.cam_enc = CameraEnc(
@@ -163,8 +159,6 @@ class DepthAnything3Net(nn.Module):
         else:
             self.cam_enc = None
         if has_cam_dec:
-            # Default cam_dec dim_in is 2*embed_dim when cat_token is on
-            # (the cls/cam token in the output is the cat'd version).
             default_dim = embed_dim * (2 if cat_token else 1)
             self.cam_dec = CameraDec(
                 dim_in=cam_dec_dim_in if cam_dec_dim_in is not None else default_dim,
@@ -175,9 +169,6 @@ class DepthAnything3Net(nn.Module):
 
         self.dtype = dtype
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
     def forward(
         self,
         image: torch.Tensor,

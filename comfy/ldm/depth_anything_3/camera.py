@@ -106,11 +106,6 @@ class _Block(nn.Module):
         return x
 
 
-# -----------------------------------------------------------------------------
-# Camera encoder
-# -----------------------------------------------------------------------------
-
-
 class CameraEnc(nn.Module):
     """Encode per-view (extrinsics, intrinsics) into a camera token.
 
@@ -163,11 +158,6 @@ class CameraEnc(nn.Module):
         tokens = self.trunk(tokens)
         tokens = self.trunk_norm(tokens)
         return tokens
-
-
-# -----------------------------------------------------------------------------
-# Camera decoder
-# -----------------------------------------------------------------------------
 
 
 class CameraDec(nn.Module):

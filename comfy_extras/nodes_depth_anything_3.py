@@ -72,19 +72,9 @@ class LoadDepthAnything3(io.ComfyNode):
         return io.NodeOutput(model)
 
 
-# -----------------------------------------------------------------------------
-# Inference helpers
-# -----------------------------------------------------------------------------
-
-
 def _run_da3(model_patcher, image: torch.Tensor, process_res: int,
              method: str = "upper_bound_resize"):
-    """Run the DA3 network on a (B, H, W, 3) IMAGE batch.
-
-    Returns ``(depth, confidence, sky)`` tensors at the original image
-    resolution. ``confidence`` / ``sky`` are ``None`` when the variant does
-    not produce them.
-    """
+    """Run DA3 on ``(B,H,W,3)`` IMAGE; returns depth/conf/sky at original resolution (or None)."""
     assert image.ndim == 4 and image.shape[-1] == 3, \
         f"expected (B,H,W,3) IMAGE; got {tuple(image.shape)}"
 
@@ -95,7 +85,6 @@ def _run_da3(model_patcher, image: torch.Tensor, process_res: int,
     dtype = diffusion.dtype if diffusion.dtype is not None else torch.float32
 
     depths, confs, skies = [], [], []
-    # Process one image at a time to keep peak memory predictable.
     for i in range(B):
         single = image[i:i + 1].to(device)
         x = da3_preprocess.preprocess_image(single, process_res=process_res, method=method)
