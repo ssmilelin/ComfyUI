@@ -3,8 +3,7 @@
 Adds these nodes:
 
 * ``LoadDepthAnything3`` -- load a DA3 ``.safetensors`` file from the
-  ``models/depth_estimation/`` folder. Falls back to ``models/diffusion_models/``
-  so existing installations keep working.
+  ``models/geometry_estimation/`` folder.
 * ``DepthAnything3`` -- unified depth estimation node supporting both mono and
   multi-view modes via a DynamicCombo selector. In mono mode, returns a
   normalised depth image plus sky/confidence masks. In multi-view mode,
@@ -43,11 +42,11 @@ class LoadDepthAnything3(io.ComfyNode):
         return io.Schema(
             node_id="LoadDepthAnything3",
             display_name="Load Depth Anything 3",
-            category="loaders/depth_estimation",
+            category="loaders/geometry_estimation",
             inputs=[
                 io.Combo.Input(
                     "model_name",
-                    options=folder_paths.get_filename_list("depth_estimation"),
+                    options=folder_paths.get_filename_list("geometry_estimation"),
                 ),
                 io.Combo.Input(
                     "weight_dtype",
