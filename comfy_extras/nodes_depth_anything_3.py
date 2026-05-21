@@ -157,7 +157,7 @@ class DepthAnything3Inference(io.ComfyNode):
             category="image/geometry_estimation",
             description="Run Depth Anything 3 on an image or image batch. In multi-view mode each frame is treated as a separate view of the same scene.",
             inputs=[
-                io.Model.Input("model"),
+                DA3ModelType.Input("da3_model"),
                 io.Image.Input("image",
                                tooltip="Single image or image batch. "
                                        "In multi-view mode each frame is treated as "
@@ -219,14 +219,14 @@ class DepthAnything3Inference(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, image, process_res, resize_method, mode) -> io.NodeOutput:
+    def execute(cls, da3_model, image, process_res, resize_method, mode) -> io.NodeOutput:
         mode_val = mode["mode"]  # "mono" or "multiview"
 
         if mode_val == "mono":
-            return cls._execute_mono(model, image, process_res, resize_method)
+            return cls._execute_mono(da3_model, image, process_res, resize_method)
 
         # Capability checks for multi-view pose.
-        diffusion = model.model.diffusion_model
+        diffusion = da3_model.model.diffusion_model
         pose_method = mode["pose_method"]
         ref_view_strategy = mode["ref_view_strategy"]
 
@@ -244,7 +244,7 @@ class DepthAnything3Inference(io.ComfyNode):
             )
 
         return cls._execute_multiview(
-            model, image, process_res, resize_method,
+            da3_model, image, process_res, resize_method,
             ref_view_strategy, pose_method,
         )
 
