@@ -42,7 +42,7 @@ class LoadDepthAnything3(io.ComfyNode):
         return io.Schema(
             node_id="LoadDepthAnything3",
             display_name="Load Depth Anything 3",
-            category="loaders/geometry_estimation",
+            category="loaders",
             inputs=[
                 io.Combo.Input(
                     "model_name",
