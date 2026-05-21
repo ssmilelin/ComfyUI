@@ -200,8 +200,9 @@ class DepthAnything3(io.ComfyNode):
                                options=["v2_style", "min_max", "raw"],
                                default="v2_style",
                                tooltip="How to map raw depth to [0, 1] for the output image. "
-                                       "'raw' preserves absolute values — use this to keep "
-                                       "metric units when running DA3-Metric-Large."),
+                                       "'v2_style': normalizes using mean and std for perceptually balanced results (default). "
+                                       "'min_max': stretches the full depth range to [0, 1] for maximum contrast. "
+                                       "'raw': preserves absolute values — use this to keep metric units when running DA3-Metric-Large."),
                 io.Boolean.Input("apply_sky_clip", default=False,
                                  tooltip="Clip sky-region depth to the 99th percentile before "
                                          "normalisation. Requires a sky segmentation head "
