@@ -18,6 +18,9 @@ from tqdm.auto import tqdm
 MoGeModelType = io.Custom("MOGE_MODEL")
 MoGeGeometry = io.Custom("MOGE_GEOMETRY")
 
+# Redefined (not imported) to avoid a hard dependency on nodes_depth_anything_3;
+# io.Custom types are matched by string key, so both definitions refer to the same wire type.
+DA3Geometry = io.Custom("DA3_GEOMETRY")
 
 # MOGE_GEOMETRY is a dict with these optional keys (absent when the upstream model didn't produce them):
 #   "points":     torch.Tensor (B, H, W, 3)
@@ -286,7 +289,10 @@ class MoGeRender(io.ComfyNode):
             description="Render a depth map or normal map from geometry data",
             category="image/geometry_estimation",
             inputs=[
-                MoGeGeometry.Input("moge_geometry"),
+                io.MultiType.Input("moge_geometry", types=[MoGeGeometry, DA3Geometry],
+                                   tooltip="Accepts MOGE_GEOMETRY (from MoGe nodes) or DA3_GEOMETRY (from Depth Anything 3). "
+                                           "Normal render modes require points or normals and will error if those are absent — "
+                                           "DA3 produces no point cloud, so only 'depth' and 'mask' outputs are supported."),
                 io.Combo.Input("output", options=["depth", "depth_colored", "normal_opengl", "normal_directx", "mask"], default="depth",
                     tooltip="DirectX vs OpenGL controls the normal-map green-channel convention. DirectX: green = -Y down (Unreal). OpenGL: green = +Y up (Blender, Substance, Unity, glTF)."),
             ],

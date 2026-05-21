@@ -5,10 +5,10 @@ Adds these nodes:
 * ``LoadDepthAnything3`` -- load a DA3 ``.safetensors`` file from the
   ``models/geometry_estimation/`` folder.
 * ``DepthAnything3`` -- unified depth estimation node supporting both mono and
-  multi-view modes via a DynamicCombo selector. In mono mode, returns a
-  normalised depth image plus sky/confidence masks. In multi-view mode,
-  additionally returns per-view extrinsics, intrinsics and raw depth packed
-  as a LATENT.
+  multi-view modes via a DynamicCombo selector. Returns a single DA3_GEOMETRY
+  dict containing raw depth, normalised depth image, source image, and
+  optionally sky/mask (Mono/Metric), confidence (Small/Base), and
+  extrinsics/intrinsics (multi-view). Compatible with MoGe Render.
 
 Model capability matrix
 -----------------------
@@ -31,12 +31,28 @@ import torch
 
 import comfy.model_management as mm
 import comfy.sd
-from comfy_extras.nodes_moge import MoGeGeometry
 import folder_paths
 from comfy.ldm.depth_anything_3 import preprocess as da3_preprocess
 from comfy_api.latest import ComfyExtension, io
 
 DA3ModelType = io.Custom("DA3_MODEL")
+DA3Geometry = io.Custom("DA3_GEOMETRY")
+
+# DA3_GEOMETRY is a dict with these optional keys (absent when the upstream model didn't produce them):
+#
+# Per-frame tensors — B = batch size in mono mode; B = S (number of views) in multi-view mode.
+#   "depth":       torch.Tensor (B, H, W)         -- raw depth (always present)
+#   "depth_image": torch.Tensor (B, H, W, 3)      -- normalised depth for display (always present)
+#   "image":       torch.Tensor (B, H, W, 3)      -- source image in [0, 1], CPU (always present)
+#   "mode":        str                            -- "mono" or "multiview" (always present)
+#   "sky":         torch.Tensor (B, H, W)         -- sky probability in [0, 1] (Mono/Metric variants only)
+#   "mask":        torch.Tensor (B, H, W) bool    -- True = valid foreground / False = sky (present when sky head available)
+#   "confidence":  torch.Tensor (B, H, W)         -- normalised depth confidence in [0, 1] (Small/Base variants only)
+#
+# Multi-view only — S = number of views; the leading 1 is the scene dimension from the model.
+#   "extrinsics":  torch.Tensor (1, S, 4, 4)      -- world-to-camera matrices
+#   "intrinsics":  torch.Tensor (1, S, 3, 3)      -- pixel-space intrinsics
+
 
 class LoadDepthAnything3(io.ComfyNode):
     @classmethod
@@ -143,17 +159,19 @@ def _run_da3(model_patcher, image: torch.Tensor, process_res: int,
 class DepthAnything3(io.ComfyNode):
     """Unified Depth Anything 3 node.
 
+    Returns a single DA3_GEOMETRY dict containing all useful outputs.
+    See the DA3_GEOMETRY comment block near the top of this module for the full key listing.
+
     Mono mode
     ---------
-    Runs the model on each batch element independently and returns a
-    normalised depth image together with sky and confidence masks.
+    Runs the model on each batch element independently.
 
     Multi-view mode
     ---------------
     Treats every batch element as a separate view of the same scene.
     Runs all views in a single forward pass so cross-view attention can
-    establish geometric consistency. Additionally returns a ``LATENT``
-    dict with per-view camera extrinsics, intrinsics and raw depth.
+    establish geometric consistency. Adds ``extrinsics`` and ``intrinsics``
+    to the geometry dict.
 
     Capability errors
     -----------------
@@ -161,15 +179,6 @@ class DepthAnything3(io.ComfyNode):
     model feature that is absent in the loaded checkpoint (e.g.
     ``apply_sky_clip=True`` on DA3-Small/Base which has no sky head,
     or ``pose_method='cam_dec'`` on a monocular model).
-
-    Camera LATENT structure (multi-view only)
-    -----------------------------------------
-      samples:    (1, S, 1, H, W)  -- raw depth packed as latent samples
-      type:       "da3_multiview"
-      extrinsics: (1, S, 4, 4)     -- world-to-camera matrices
-      intrinsics: (1, S, 3, 3)     -- pixel-space intrinsics
-      depth_raw:  (S, H, W)        -- un-normalised depth
-      confidence: (S, H, W)        -- per-pixel confidence (zeros if N/A)
     """
 
     @classmethod
@@ -244,16 +253,13 @@ class DepthAnything3(io.ComfyNode):
                 ]),
             ],
             outputs=[
-                io.Image.Output("depth_image"),
-                io.Mask.Output("sky_mask",
-                               tooltip="Sky probability mask (Mono/Metric variants). "
-                                       "Zeros for Small/Base."),
-                io.Mask.Output("confidence",
-                               tooltip="Depth confidence (Small/Base variants). "
-                                       "Zeros for Mono/Metric."),
-                io.Latent.Output("camera",
-                                 tooltip="Multi-view: per-view extrinsics + intrinsics + raw depth. "
-                                         "In mono mode this is an empty placeholder."),
+                DA3Geometry.Output("geometry",
+                                   tooltip="DA3_GEOMETRY dict. Always contains: "
+                                           "'depth' (raw), 'depth_image' (normalised), 'image' (source), 'mode'. "
+                                           "Optional: 'sky' + 'mask' (Mono/Metric variants), "
+                                           "'confidence' (Small/Base variants), "
+                                           "'extrinsics' + 'intrinsics' (multi-view only). "
+                                           "Compatible with MoGe Render for depth and mask visualisation."),
             ],
         )
 
@@ -340,18 +346,22 @@ class DepthAnything3(io.ComfyNode):
         if apply_sky_clip and sky is not None:
             depth = cls._apply_sky_clip(depth, sky)
 
-        out_image = cls._depth_to_image(depth, sky, normalization)
+        depth_image = cls._depth_to_image(depth, sky, normalization)
 
-        sky_mask = sky if sky is not None else torch.zeros_like(depth)
-        conf_mask = (_normalize_confidence(confidence)
-                     if confidence is not None else torch.zeros_like(depth))
-        camera = {"samples": torch.zeros(1, 1, 1, 1, 1), "type": "mono"}
-        return io.NodeOutput(
-            out_image,
-            sky_mask.contiguous(),
-            conf_mask.contiguous(),
-            camera,
-        )
+        geometry: dict = {
+            "depth": depth.contiguous(),
+            "depth_image": depth_image,
+            "image": image[..., :3].cpu(),
+            "mode": "mono",
+        }
+        if sky is not None:
+            geometry["sky"] = sky.contiguous()
+            # True = valid foreground, False = sky/invalid — matches MoGe mask semantics.
+            geometry["mask"] = (sky < 0.5).contiguous()
+        if confidence is not None:
+            geometry["confidence"] = confidence.contiguous()
+            geometry["confidence_image"] = _normalize_confidence(confidence).contiguous()
+        return io.NodeOutput(geometry)
 
     @classmethod
     def _execute_multiview(cls, model, image, process_res, resize_method,
@@ -410,21 +420,22 @@ class DepthAnything3(io.ComfyNode):
         sky_for_norm = sky if diffusion.has_sky else None
         depth_image = cls._depth_to_image(depth, sky_for_norm, normalization)
 
-        sky_mask = sky if sky is not None else torch.zeros_like(depth)
-        camera_latent = {
-            "samples": depth.unsqueeze(0).unsqueeze(2).contiguous(),  # (1, S, 1, H, W)
-            "type": "da3_multiview",
+        geometry: dict = {
+            "depth": depth.contiguous(),
+            "depth_image": depth_image,
+            "image": image[..., :3].cpu(),
+            "mode": "multiview",
             "extrinsics": extrinsics.contiguous(),
             "intrinsics": intrinsics.contiguous(),
-            "depth_raw": depth.contiguous(),
-            "confidence": conf_raw.contiguous(),
         }
-        return io.NodeOutput(
-            depth_image,
-            sky_mask.contiguous(),
-            conf_mask.contiguous(),
-            camera_latent,
-        )
+        if sky is not None:
+            geometry["sky"] = sky.contiguous()
+            # True = valid foreground, False = sky/invalid — matches MoGe mask semantics.
+            geometry["mask"] = (sky < 0.5).contiguous()
+        if conf_raw.any():
+            geometry["confidence"] = conf_mask.contiguous()
+            geometry["confidence_image"] = _normalize_confidence(conf_mask).contiguous()
+        return io.NodeOutput(geometry)
 
 
 class DepthAnything3Extension(ComfyExtension):
