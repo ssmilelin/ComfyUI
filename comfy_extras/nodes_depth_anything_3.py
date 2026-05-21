@@ -169,16 +169,11 @@ class DepthAnything3Inference(io.ComfyNode):
                 io.Combo.Input("resize_method",
                                options=["upper_bound_resize", "lower_bound_resize"],
                                default="upper_bound_resize",
-                               tooltip="upper_bound_resize: scale so the longest side = process_res "
-                                       "(caps memory, default). "
-                                       "lower_bound_resize: scale so the shortest side = process_res "
-                                       "(preserves more detail on tall/wide images, uses more memory)."),
+                               tooltip="- upper_bound_resize: scale so the longest side = process_res (caps memory, default).\n"
+                                       "- lower_bound_resize: scale so the shortest side = process_res (preserves more detail on tall/wide images, uses more memory)."),
                 io.DynamicCombo.Input("mode",
-                                      tooltip="mono: single image or independent batch — "
-                                              "use with any model. "
-                                              "multiview: all frames processed together with "
-                                              "cross-view attention for geometric consistency; "
-                                              "also outputs camera pose — requires DA3-Small or DA3-Base.",
+                                      tooltip="- mono: single image or independent batch — use with any model.\n"
+                                              "- multiview: all frames processed together with cross-view attention for geometric consistency; also outputs camera pose — requires DA3-Small or DA3-Base.",
                                       options=[
                     io.DynamicCombo.Option("mono", []),
                     io.DynamicCombo.Option("multiview", [
@@ -186,35 +181,23 @@ class DepthAnything3Inference(io.ComfyNode):
                                        options=["saddle_balanced", "saddle_sim_range",
                                                 "first", "middle"],
                                        default="saddle_balanced",
-                                       tooltip="Which view to use as the geometric anchor "
-                                               "(only applied when S >= 3 and no extrinsics "
-                                               "are provided). "
-                                               "saddle_balanced: picks the view whose CLS-token "
-                                               "features are closest to the median across "
-                                               "similarity, norm and variance — best general "
-                                               "choice. "
-                                               "saddle_sim_range: picks the view with the widest "
-                                               "similarity spread to other views — favours "
-                                               "the most distinct viewpoint. "
-                                               "first / middle: deterministic positional fallbacks."),
+                                               tooltip="Which view to use as the geometric anchor (only applied when S >= 3 and no extrinsics are provided).\n"
+                                               "- saddle_balanced: picks the view whose CLS-token features are closest to the median across similarity, norm and variance — best general choice.\n"
+                                               "- saddle_sim_range: picks the view with the widest similarity spread to other views — favours the most distinct viewpoint.\n"
+                                               "- first / middle: deterministic positional fallbacks."),
                         io.Combo.Input("pose_method",
                                        options=["cam_dec", "ray_pose"],
                                        default="cam_dec",
-                                       tooltip="cam_dec: small MLP on the final camera token "
-                                               "(DA3-Small/Base). "
-                                               "ray_pose: RANSAC over the DualDPT ray output "
-                                               "(DA3-Small/Base only)."),
+                                               tooltip="- cam_dec: small MLP on the final camera token (DA3-Small/Base).\n"
+                                               "- ray_pose: RANSAC over the DualDPT ray output (DA3-Small/Base only)."),
                     ]),
                 ]),
             ],
             outputs=[
                 DA3Geometry.Output("geometry",
-                                   tooltip="DA3_GEOMETRY dict of raw tensors. "
-                                           "Always: 'depth' (B,H,W), 'image', 'mode'. "
-                                           "Optional: 'sky' + 'mask' (Mono/Metric), "
-                                           "'confidence' raw (Small/Base), "
-                                           "'extrinsics' + 'intrinsics' (multi-view). "
-                                           "Feed into DepthAnything3Render or MoGeRender."),
+                                   tooltip="DA3_GEOMETRY dict of raw tensors.\n"
+                                           "- Always: 'depth' (B,H,W), 'image', 'mode'.\n"
+                                           "- Optional: 'sky' + 'mask' (Mono/Metric), 'confidence' raw (Small/Base), 'extrinsics' + 'intrinsics' (multi-view)."),
             ],
         )
 
@@ -335,9 +318,9 @@ class DepthAnything3Render(io.ComfyNode):
         io.Combo.Input("normalization",
                     options=["v2_style", "min_max", "raw"],
                     default="v2_style",
-                    tooltip="'v2_style': mean/std normalisation for perceptually balanced results (default). "
-                            "'min_max': stretches the full depth range to [0, 1] for maximum contrast. "
-                            "'raw': no scaling — preserves metric units for DA3-Metric-Large."),
+                    tooltip="- v2_style: mean/std normalisation for perceptually balanced results (default).\n"
+                            "- min_max: stretches the full depth range to [0, 1] for maximum contrast.\n"
+                            "- raw: no scaling — preserves metric units for DA3-Metric-Large."),
         io.Boolean.Input("apply_sky_clip", default=False,
                         tooltip="Clip sky-region depth to the 99th percentile of foreground depth before "
                                 "normalisation. Requires a 'sky' tensor in the geometry "
@@ -354,10 +337,10 @@ class DepthAnything3Render(io.ComfyNode):
             inputs=[
                 DA3Geometry.Input("geometry"),
                 io.DynamicCombo.Input("output",
-                                      tooltip="depth: normalised greyscale depth image. "
-                                              "depth_colored: depth mapped through the Turbo colormap. "
-                                              "sky_mask: sky probability in [0, 1] (Mono/Metric variants only). "
-                                              "confidence: normalised depth confidence (Small/Base variants only).",
+                                      tooltip="- depth: normalised greyscale depth image.\n"
+                                              "- depth_colored: depth mapped through the Turbo colormap.\n"
+                                              "- sky_mask: sky probability in [0, 1] (Mono/Metric variants only).\n"
+                                              "- confidence: normalised depth confidence (Small/Base variants only).",
                                       options=[
                     io.DynamicCombo.Option("depth", cls._DEPTH_RENDER_INPUTS),
                     io.DynamicCombo.Option("depth_colored", cls._DEPTH_RENDER_INPUTS),
