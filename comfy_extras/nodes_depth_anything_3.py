@@ -31,6 +31,7 @@ import torch
 
 import comfy.model_management as mm
 import comfy.sd
+from comfy_extras.nodes_moge import MoGeGeometry
 import folder_paths
 from comfy.ldm.depth_anything_3 import preprocess as da3_preprocess
 from comfy_api.latest import ComfyExtension, io
@@ -174,8 +175,10 @@ class DepthAnything3(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="DepthAnything3",
-            display_name="Depth Anything 3",
-            category="image/depth",
+            search_aliases=["depth", "geometry", "da3", "depth anything", "monocular", "pointmap", "sky", "3d", "metric depth", "disparity"],
+            display_name="Run Depth Anything 3",
+            category="image/geometry_estimation",
+            description="Run Depth Anything 3 on an image or image batch. In multi-view mode each frame is treated as a separate view of the same scene.",
             inputs=[
                 io.Model.Input("model"),
                 io.Image.Input("image",
