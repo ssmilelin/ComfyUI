@@ -33,6 +33,7 @@ import torch
 import comfy.model_management as mm
 import comfy.sd
 import folder_paths
+from comfy.ldm.colormap import turbo as _turbo
 from comfy.ldm.depth_anything_3 import preprocess as da3_preprocess
 from comfy_api.latest import ComfyExtension, io
 
@@ -150,7 +151,7 @@ class DepthAnything3Inference(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="DepthAnything3",
+            node_id="DepthAnything3Inference",
             search_aliases=["depth", "geometry", "da3", "depth anything", "monocular", "pointmap", "sky", "3d", "metric depth", "disparity"],
             display_name="Run Depth Anything 3",
             category="image/geometry_estimation",
@@ -321,12 +322,27 @@ class DepthAnything3Inference(io.ComfyNode):
         return io.NodeOutput(geometry)
 
 
+
+
 class DepthAnything3Render(io.ComfyNode):
     """Visualise a DA3_GEOMETRY packet as a single image.
 
     Mirrors the MoGeRender interface: one ``output`` selector, one IMAGE out.
     Use multiple nodes in parallel to get depth + sky + confidence simultaneously.
     """
+
+    _DEPTH_RENDER_INPUTS = [
+        io.Combo.Input("normalization",
+                    options=["v2_style", "min_max", "raw"],
+                    default="v2_style",
+                    tooltip="'v2_style': mean/std normalisation for perceptually balanced results (default). "
+                            "'min_max': stretches the full depth range to [0, 1] for maximum contrast. "
+                            "'raw': no scaling — preserves metric units for DA3-Metric-Large."),
+        io.Boolean.Input("apply_sky_clip", default=False,
+                        tooltip="Clip sky-region depth to the 99th percentile of foreground depth before "
+                                "normalisation. Requires a 'sky' tensor in the geometry "
+                                "(DA3-Mono-Large or DA3-Metric-Large); raises an error otherwise."),
+    ]
 
     @classmethod
     def define_schema(cls):
@@ -338,22 +354,13 @@ class DepthAnything3Render(io.ComfyNode):
             inputs=[
                 DA3Geometry.Input("geometry"),
                 io.DynamicCombo.Input("output",
-                                      tooltip="depth: normalised depth image. "
+                                      tooltip="depth: normalised greyscale depth image. "
+                                              "depth_colored: depth mapped through the Turbo colormap. "
                                               "sky_mask: sky probability in [0, 1] (Mono/Metric variants only). "
                                               "confidence: normalised depth confidence (Small/Base variants only).",
                                       options=[
-                    io.DynamicCombo.Option("depth", [
-                        io.Combo.Input("normalization",
-                                       options=["v2_style", "min_max", "raw"],
-                                       default="v2_style",
-                                       tooltip="'v2_style': mean/std normalisation for perceptually balanced results (default). "
-                                               "'min_max': stretches the full depth range to [0, 1] for maximum contrast. "
-                                               "'raw': no scaling — preserves metric units for DA3-Metric-Large."),
-                        io.Boolean.Input("apply_sky_clip", default=False,
-                                         tooltip="Clip sky-region depth to the 99th percentile of foreground depth before "
-                                                 "normalisation. Requires a 'sky' tensor in the geometry "
-                                                 "(DA3-Mono-Large or DA3-Metric-Large); raises an error otherwise."),
-                    ]),
+                    io.DynamicCombo.Option("depth", cls._DEPTH_RENDER_INPUTS),
+                    io.DynamicCombo.Option("depth_colored", cls._DEPTH_RENDER_INPUTS),
                     io.DynamicCombo.Option("sky_mask", []),
                     io.DynamicCombo.Option("confidence", []),
                 ]),
@@ -365,7 +372,7 @@ class DepthAnything3Render(io.ComfyNode):
     def execute(cls, geometry, output) -> io.NodeOutput:
         output_val = output["output"]
 
-        if output_val == "depth":
+        if output_val in ("depth", "depth_colored"):
             normalization = output["normalization"]
             apply_sky_clip = output["apply_sky_clip"]
             if apply_sky_clip and "sky" not in geometry:
@@ -380,7 +387,8 @@ class DepthAnything3Render(io.ComfyNode):
                     da3_preprocess.apply_sky_aware_clip(depth[i], sky[i])
                     for i in range(depth.shape[0])
                 ], dim=0)
-            result = cls._depth_to_image(depth, sky, normalization)
+            grey = cls._depth_to_image(depth, sky, normalization)  # (B,H,W,3) greyscale
+            result = _turbo(grey[..., 0]) if output_val == "depth_colored" else grey
 
         elif output_val == "sky_mask":
             if "sky" not in geometry:
