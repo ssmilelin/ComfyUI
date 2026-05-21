@@ -36,6 +36,7 @@ import folder_paths
 from comfy.ldm.depth_anything_3 import preprocess as da3_preprocess
 from comfy_api.latest import ComfyExtension, io
 
+DA3ModelType = io.Custom("DA3_MODEL")
 
 class LoadDepthAnything3(io.ComfyNode):
     @classmethod
@@ -55,7 +56,7 @@ class LoadDepthAnything3(io.ComfyNode):
                     default="default",
                 ),
             ],
-            outputs=[io.Model.Output("model")],
+            outputs=[DA3ModelType.Output()],
         )
 
     @classmethod
