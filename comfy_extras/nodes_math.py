@@ -63,14 +63,14 @@ class MathExpressionNode(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         autogrow = io.Autogrow.TemplateNames(
-            input=io.MultiType.Input("value", [io.Float, io.Int, io.Boolean]),
+            input=io.MultiType.Input("value", [io.Float, io.Int]),
             names=list(string.ascii_lowercase),
             min=1,
         )
         return io.Schema(
             node_id="ComfyMathExpression",
             display_name="Math Expression",
-            category="utils",
+            category="logic",
             search_aliases=[
                 "expression", "formula", "calculate", "calculator",
                 "eval", "math",
@@ -82,7 +82,6 @@ class MathExpressionNode(io.ComfyNode):
             outputs=[
                 io.Float.Output(display_name="FLOAT"),
                 io.Int.Output(display_name="INT"),
-                io.Boolean.Output(display_name="BOOL"),
             ],
         )
 
@@ -98,7 +97,7 @@ class MathExpressionNode(io.ComfyNode):
 
         result = simple_eval(expression, names=context, functions=MATH_FUNCTIONS)
         # bool check must come first because bool is a subclass of int in Python
-        if not isinstance(result, (int, float)):
+        if isinstance(result, bool) or not isinstance(result, (int, float)):
             raise ValueError(
                 f"Math Expression '{expression}' must evaluate to a numeric result, "
                 f"got {type(result).__name__}: {result!r}"
@@ -107,7 +106,7 @@ class MathExpressionNode(io.ComfyNode):
             raise ValueError(
                 f"Math Expression '{expression}' produced a non-finite result: {result}"
             )
-        return io.NodeOutput(float(result), int(result), bool(result))
+        return io.NodeOutput(float(result), int(result))
 
 
 class MathExtension(ComfyExtension):

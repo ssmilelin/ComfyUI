@@ -113,6 +113,7 @@ def load_safetensors(ckpt):
                         "_comfy_tensor_file_slice",
                         comfy.memory_management.TensorFileSlice(f, threading.get_ident(), data_base_offset + start, end - start))
                 setattr(storage, "_comfy_tensor_mmap_refs", (model_mmap, mv))
+                setattr(storage, "_comfy_tensor_mmap_touched", False)
                 sd[name] = tensor
 
     return sd, header.get("__metadata__", {}),
@@ -1019,11 +1020,10 @@ def bislerp(samples, width, height):
 
 def lanczos(samples, width, height):
     #the below API is strict and expects grayscale to be squeezed
-    if samples.ndim == 4:
-        samples = samples.squeeze(1) if samples.shape[1] == 1 else samples.movedim(1, -1)
+    samples = samples.squeeze(1) if samples.shape[1] == 1 else samples.movedim(1, -1)
     images = [Image.fromarray(np.clip(255. * image.cpu().numpy(), 0, 255).astype(np.uint8)) for image in samples]
     images = [image.resize((width, height), resample=Image.Resampling.LANCZOS) for image in images]
-    images = [torch.from_numpy(t).movedim(-1, 0) if (t := np.array(image).astype(np.float32) / 255.0).ndim == 3 else torch.from_numpy(t) for image in images]
+    images = [torch.from_numpy(np.array(image).astype(np.float32) / 255.0).movedim(-1, 0) for image in images]
     result = torch.stack(images)
     return result.to(samples.device, samples.dtype)
 
@@ -1164,18 +1164,12 @@ def tiled_scale_multidim(samples, function, tile=(64, 64), overlap=8, upscale_am
 
             o = out
             o_d = out_div
-            ps_view = ps
-            mask_view = mask
             for d in range(dims):
-                l = min(ps_view.shape[d + 2], o.shape[d + 2] - upscaled[d])
-                o = o.narrow(d + 2, upscaled[d], l)
-                o_d = o_d.narrow(d + 2, upscaled[d], l)
-                if l < ps_view.shape[d + 2]:
-                    ps_view = ps_view.narrow(d + 2, 0, l)
-                    mask_view = mask_view.narrow(d + 2, 0, l)
+                o = o.narrow(d + 2, upscaled[d], mask.shape[d + 2])
+                o_d = o_d.narrow(d + 2, upscaled[d], mask.shape[d + 2])
 
-            o.add_(ps_view * mask_view)
-            o_d.add_(mask_view)
+            o.add_(ps * mask)
+            o_d.add_(mask)
 
             if pbar is not None:
                 pbar.update(1)
@@ -1202,7 +1196,7 @@ def model_trange(*args, **kwargs):
             pbar.i1_time = time.time()
             pbar.set_postfix_str(" Model Initialization complete!  ")
         elif pbar._i == 2:
-            #bring forward the effective start time based the diff between first and second iteration
+            #bring forward the effective start time based the the diff between first and second iteration
             #to attempt to remove load overhead from the final step rate estimate.
             pbar.start_t = pbar.i1_time - (time.time() - pbar.i1_time)
             pbar.set_postfix_str("")
@@ -1451,3 +1445,4 @@ def deepcopy_list_dict(obj, memo=None):
 
     memo[obj_id] = res
     return res
+

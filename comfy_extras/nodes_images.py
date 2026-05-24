@@ -55,10 +55,9 @@ class ImageCropV2(IO.ComfyNode):
     def define_schema(cls):
         return IO.Schema(
             node_id="ImageCropV2",
-            search_aliases=["crop", "cut", "trim"],
+            search_aliases=["trim"],
             display_name="Crop Image",
             category="image/transform",
-            description = "Crop an image to the specified dimensions.",
             essentials_category="Image Tools",
             has_intermediate_output=True,
             inputs=[
@@ -137,7 +136,7 @@ class ImageFromBatch(IO.ComfyNode):
             category="image/batch",
             inputs=[
                 IO.Image.Input("image"),
-                IO.Int.Input("batch_index", default=0, min=-MAX_RESOLUTION, max=MAX_RESOLUTION),
+                IO.Int.Input("batch_index", default=0, min=0, max=4095),
                 IO.Int.Input("length", default=1, min=1, max=4096),
             ],
             outputs=[IO.Image.Output()],
@@ -146,9 +145,7 @@ class ImageFromBatch(IO.ComfyNode):
     @classmethod
     def execute(cls, image, batch_index, length) -> IO.NodeOutput:
         s_in = image
-        if batch_index < 0:
-            batch_index += s_in.shape[0]
-        batch_index = max(0, min(s_in.shape[0] - 1, batch_index))
+        batch_index = min(s_in.shape[0] - 1, batch_index)
         length = min(s_in.shape[0] - batch_index, length)
         s = s_in[batch_index:batch_index + length].clone()
         return IO.NodeOutput(s)
@@ -163,7 +160,7 @@ class ImageAddNoise(IO.ComfyNode):
             node_id="ImageAddNoise",
             search_aliases=["film grain"],
             display_name="Add Noise to Image",
-            category="image/filters",
+            category="image/postprocessing",
             inputs=[
                 IO.Image.Input("image"),
                 IO.Int.Input(
@@ -195,8 +192,7 @@ class SaveAnimatedWEBP(IO.ComfyNode):
     def define_schema(cls):
         return IO.Schema(
             node_id="SaveAnimatedWEBP",
-            display_name="Save Animated WEBP",
-            category="image",
+            category="image/animation",
             inputs=[
                 IO.Image.Input("images"),
                 IO.String.Input("filename_prefix", default="ComfyUI"),
@@ -233,8 +229,7 @@ class SaveAnimatedPNG(IO.ComfyNode):
     def define_schema(cls):
         return IO.Schema(
             node_id="SaveAnimatedPNG",
-            display_name="Save Animated PNG",
-            category="image",
+            category="image/animation",
             inputs=[
                 IO.Image.Input("images"),
                 IO.String.Input("filename_prefix", default="ComfyUI"),
@@ -496,7 +491,7 @@ class SaveSVGNode(IO.ComfyNode):
             search_aliases=["export vector", "save vector graphics"],
             display_name="Save SVG",
             description="Save SVG files on disk.",
-            category="image",
+            category="image/save",
             inputs=[
                 IO.SVG.Input("svg"),
                 IO.String.Input(

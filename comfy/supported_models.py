@@ -7,7 +7,6 @@ from . import sdxl_clip
 import comfy.text_encoders.sd2_clip
 import comfy.text_encoders.sd3_clip
 import comfy.text_encoders.sa_t5
-import comfy.text_encoders.sa3
 import comfy.text_encoders.aura_t5
 import comfy.text_encoders.pixart_t5
 import comfy.text_encoders.hydit
@@ -29,7 +28,6 @@ import comfy.text_encoders.ace15
 import comfy.text_encoders.longcat_image
 import comfy.text_encoders.ernie
 import comfy.text_encoders.cogvideo
-import comfy.text_encoders.hidream_o1
 
 from . import supported_models_base
 from . import latent_formats
@@ -603,29 +601,6 @@ class StableAudio(supported_models_base.BASE):
 
     def clip_target(self, state_dict={}):
         return supported_models_base.ClipTarget(comfy.text_encoders.sa_t5.SAT5Tokenizer, comfy.text_encoders.sa_t5.SAT5Model)
-
-class StableAudio3(StableAudio):
-    unet_config = {
-        "audio_model": "dit1.0",
-        "global_cond_shared_embed": True,
-    }
-
-    sampling_settings = {
-        "multiplier": 1.0,
-        "shift": 2.0,
-    }
-
-    latent_format = latent_formats.StableAudio3
-
-    memory_usage_factor = 7
-
-    def get_model(self, state_dict, prefix="", device=None):
-        seconds_total_sd = utils.state_dict_prefix_replace(state_dict, {"conditioner.conditioners.seconds_total.": ""}, filter_keys=True)
-        padding_embedding = state_dict.get("conditioner.conditioners.prompt.padding_embedding", None)
-        return model_base.StableAudio3(self, seconds_total_embedder_weights=seconds_total_sd, padding_embedding=padding_embedding, device=device)
-
-    def clip_target(self, state_dict={}):
-        return supported_models_base.ClipTarget(comfy.text_encoders.sa3.SAT5GemmaTokenizer, comfy.text_encoders.sa3.SAT5GemmaModel)
 
 class AuraFlow(supported_models_base.BASE):
     unet_config = {
@@ -1338,37 +1313,6 @@ class WAN21_SCAIL(WAN21_T2V):
         out = model_base.WAN21_SCAIL(self, image_to_video=False, device=device)
         return out
 
-class WAN22_WanDancer(WAN21_T2V):
-    unet_config = {
-        "image_model": "wan2.1",
-        "model_type": "wandancer",
-        "in_dim": 36,
-    }
-
-    def __init__(self, unet_config):
-        super().__init__(unet_config)
-        self.memory_usage_factor = 1.8
-
-    def get_model(self, state_dict, prefix="", device=None):
-        out = model_base.WAN22_WanDancer(self, image_to_video=True, device=device)
-        return out
-
-    def process_unet_state_dict(self, state_dict):
-        out_sd = {}
-        for k in list(state_dict.keys()):
-            # split music_encoder in_proj into q_proj, k_proj, v_proj
-            if "music_encoder" in k and "self_attn.in_proj" in k:
-                suffix = "weight" if k.endswith("weight") else "bias"
-                tensor = state_dict[k]
-                d = tensor.shape[0] // 3
-                prefix = k.replace(f"in_proj_{suffix}", "")
-                out_sd[f"{prefix}q_proj.{suffix}"] = tensor[:d]
-                out_sd[f"{prefix}k_proj.{suffix}"] = tensor[d:2*d]
-                out_sd[f"{prefix}v_proj.{suffix}"] = tensor[2*d:]
-            else:
-                out_sd[k] = state_dict[k]
-        return out_sd
-
 class Hunyuan3Dv2(supported_models_base.BASE):
     unet_config = {
         "image_model": "hunyuan3d2",
@@ -1455,50 +1399,6 @@ class HiDream(supported_models_base.BASE):
 
     def clip_target(self, state_dict={}):
         return None #  TODO
-
-class HiDreamO1(supported_models_base.BASE):
-    unet_config = {
-        "image_model": "hidream_o1",
-    }
-
-    sampling_settings = {
-        "shift": 3.0,
-        "noise_scale": 8.0,
-    }
-
-    latent_format = latent_formats.HiDreamO1Pixel
-    memory_usage_factor = 0.033
-    # fp16 not supported: LM MLP down_proj activations fp16 overflow, causing NaNs
-    supported_inference_dtypes = [torch.bfloat16, torch.float32]
-
-    vae_key_prefix = ["vae."]
-    text_encoder_key_prefix = ["text_encoders."]
-
-    optimizations = {"fp8": False}
-
-    def get_model(self, state_dict, prefix="", device=None):
-        return model_base.HiDreamO1(self, device=device)
-
-    def process_unet_state_dict(self, state_dict):
-        # Drop unused Qwen3-VL deepstack merger weights; upstream discards them at inference.
-        for key in list(state_dict.keys()):
-            if "visual.deepstack_merger_list" in key:
-                del state_dict[key]
-        return state_dict
-
-    def process_vae_state_dict(self, state_dict):
-        # Pixel-space model: inject sentinel so VAE construction picks PixelspaceConversionVAE.
-        return {"pixel_space_vae": torch.tensor(1.0)}
-
-    def process_clip_state_dict(self, state_dict):
-        # Tokenizer-only TE: inject sentinel so load_state_dict_guess_config triggers CLIP init.
-        return {"_hidream_o1_te_sentinel": torch.zeros(1)}
-
-    def clip_target(self, state_dict={}):
-        return supported_models_base.ClipTarget(
-            comfy.text_encoders.hidream_o1.HiDreamO1Tokenizer,
-            comfy.text_encoders.hidream_o1.HiDreamO1TE,
-        )
 
 class Chroma(supported_models_base.BASE):
     unet_config = {
@@ -2042,7 +1942,6 @@ models = [
     SV3D_u,
     SV3D_p,
     SD3,
-    StableAudio3,
     StableAudio,
     AuraFlow,
     PixArtAlpha,
@@ -2083,12 +1982,10 @@ models = [
     WAN22_Animate,
     WAN21_FlowRVS,
     WAN21_SCAIL,
-    WAN22_WanDancer,
     Hunyuan3Dv2mini,
     Hunyuan3Dv2,
     Hunyuan3Dv2_1,
     HiDream,
-    HiDreamO1,
     Chroma,
     ChromaRadiance,
     ACEStep,

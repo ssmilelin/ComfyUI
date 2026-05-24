@@ -242,7 +242,6 @@ def sample_euler_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_noise = s_noise * getattr(model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -374,7 +373,6 @@ def sample_dpm_2_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_noise = s_noise * getattr(model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
     s_in = x.new_ones([x.shape[0]])
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -688,7 +686,6 @@ def sample_dpmpp_2s_ancestral_RF(model, x, sigmas, extra_args=None, callback=Non
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_noise = s_noise * getattr(model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda lbda: (lbda.exp() + 1) ** -1
     lambda_fn = lambda sigma: ((1-sigma)/sigma).log()
@@ -750,7 +747,6 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
     sigma_fn = partial(half_log_snr_to_sigma, model_sampling=model_sampling)
     lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
     sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -836,7 +832,6 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
     model_sampling = model.inner_model.model_patcher.get_model_object('model_sampling')
     lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
     sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
 
     old_denoised = None
     h, h_last = None, None
@@ -894,7 +889,6 @@ def sample_dpmpp_3m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
     model_sampling = model.inner_model.model_patcher.get_model_object('model_sampling')
     lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
     sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
 
     denoised_1, denoised_2 = None, None
     h, h_1, h_2 = None, None, None
@@ -1012,37 +1006,21 @@ def sample_ddpm(model, x, sigmas, extra_args=None, callback=None, disable=None, 
     return generic_step_sampler(model, x, sigmas, extra_args, callback, disable, noise_sampler, DDPMSampler_step)
 
 @torch.no_grad()
-def sample_lcm(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None, s_noise=1.0, s_noise_end=None, noise_clip_std=0.0):
-
-    # s_noise / s_noise_end: per-step noise multiplier, linearly interpolated across steps
-    # noise_clip_std: clamp injected noise to +/- N stddevs (0 disables).
-
+def sample_lcm(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None):
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
-    n_steps = max(1, len(sigmas) - 1)
-    model_sampling = model.inner_model.model_patcher.get_model_object('model_sampling')
-
-    s_start = float(s_noise)
-    s_end = s_start if s_noise_end is None else float(s_noise_end)
-    for i in trange(n_steps, disable=disable):
+    for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
 
         x = denoised
         if sigmas[i + 1] > 0:
-            noise = noise_sampler(sigmas[i], sigmas[i + 1])
-            if noise_clip_std > 0:
-                clip_val = noise_clip_std * noise.std()
-                noise = noise.clamp(min=-clip_val, max=clip_val)
-            t = (i / (n_steps - 1)) if n_steps > 1 else 0.0
-            s_noise_i = s_start + (s_end - s_start) * t
-            if s_noise_i != 1.0:
-                noise = noise * s_noise_i
-            x = model_sampling.noise_scaling(sigmas[i + 1], noise, x)
+            x = model.inner_model.inner_model.model_sampling.noise_scaling(sigmas[i + 1], noise_sampler(sigmas[i], sigmas[i + 1]), x)
     return x
+
 
 
 @torch.no_grad()
@@ -1271,7 +1249,6 @@ def sample_euler_ancestral_cfg_pp(model, x, sigmas, extra_args=None, callback=No
 
     model_sampling = model.inner_model.model_patcher.get_model_object("model_sampling")
     lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
 
     uncond_denoised = None
 
@@ -1319,7 +1296,6 @@ def sample_dpmpp_2s_ancestral_cfg_pp(model, x, sigmas, extra_args=None, callback
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_noise = s_noise * getattr(model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
 
     temp = [0]
     def post_cfg_function(args):
@@ -1395,7 +1371,6 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_noise = s_noise * getattr(model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
     s_in = x.new_ones([x.shape[0]])
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
@@ -1529,7 +1504,6 @@ def sample_er_sde(model, x, sigmas, extra_args=None, callback=None, disable=None
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_noise = s_noise * getattr(model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
     s_in = x.new_ones([x.shape[0]])
 
     def default_er_sde_noise_scaler(x):
@@ -1600,10 +1574,9 @@ def sample_seeds_2(model, x, sigmas, extra_args=None, callback=None, disable=Non
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
+    inject_noise = eta > 0 and s_noise > 0
 
     model_sampling = model.inner_model.model_patcher.get_model_object('model_sampling')
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
-    inject_noise = eta > 0 and s_noise > 0
     sigma_fn = partial(half_log_snr_to_sigma, model_sampling=model_sampling)
     lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
     sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
@@ -1672,10 +1645,9 @@ def sample_seeds_3(model, x, sigmas, extra_args=None, callback=None, disable=Non
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
+    inject_noise = eta > 0 and s_noise > 0
 
     model_sampling = model.inner_model.model_patcher.get_model_object('model_sampling')
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
-    inject_noise = eta > 0 and s_noise > 0
     sigma_fn = partial(half_log_snr_to_sigma, model_sampling=model_sampling)
     lambda_fn = partial(sigma_to_half_log_snr, model_sampling=model_sampling)
     sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
@@ -1741,7 +1713,6 @@ def sample_sa_solver(model, x, sigmas, extra_args=None, callback=None, disable=F
     s_in = x.new_ones([x.shape[0]])
 
     model_sampling = model.inner_model.model_patcher.get_model_object("model_sampling")
-    s_noise = s_noise * getattr(model_sampling, "noise_scale", 1.0)
     sigmas = offset_first_sigma_for_snr(sigmas, model_sampling)
     lambdas = sigma_to_half_log_snr(sigmas, model_sampling=model_sampling)
 
